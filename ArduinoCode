@@ -486,27 +486,27 @@ void loop() {
   case_num = 1;
   Rho_Phi_control(0, 720); //720
 
-  if (Serial.available() > 0) {
-    switch (case_num) {
+  if (Serial.available() > 0) { //Begin serial connection
+    switch (case_num) { 
       case 1: //STOP
-        data = Serial.readStringUntil('\n');
+        data = Serial.readStringUntil('\n'); //This will take in the values needed from the pi and append all the bytes being sent over
         data = data.toFloat();
         //Serial.print("You Sent me: ");
         //Serial.println(data);
-        resetControl();
+        resetControl(); //resets the controls to avoid any stray variables that may be floating around
         time_counts = 0;
         while (time_counts < 50) {
-          Rho_Phi_control(0.0, 0.0);
+          Rho_Phi_control(0.0, 0.0); //Don't move
           time_counts += 1;
         }
         data = "";
-        Serial.println('2');
+        Serial.println('2'); //This triggers an event over in the pi to start transmitting data 
         delay(250);
         case_num = 2;
         
 
 
-      case 2: // turn and face me coward
+      case 2: // turn and find the aruco marker
         data = Serial.readStringUntil('\n');
         angle = data.toFloat();
         //Serial.print("You Sent me: ");
@@ -524,7 +524,7 @@ void loop() {
         case_num = 3;
 
 
-      case 3: //goin for a drive
+      case 3: //drive in a straight line to the aruco marker
         //while (Serial.available() == 0) {}
         data = Serial.readStringUntil('\n');
         distance = data.toFloat();
@@ -542,7 +542,7 @@ void loop() {
         case_num = 4;
 
 
-      case 4: // turn before circle
+      case 4: // turn 90 degrees 
         resetControl();
         //rightWheel.write(0);
         //leftWheel.write(0);
