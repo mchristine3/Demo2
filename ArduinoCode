@@ -1,0 +1,578 @@
+/*  NAME: Kris Flatt & Grace Ford
+    COURSE: EENG 350 C
+    ASSIGNMENT: Demo 1
+    FileName: Demo2_FINAL
+    Last Modified: 19 April 2021
+
+    Description: Demo 2 demonstration code. This code implements the position and velocity control from Demo 1, with the addition of 
+    serial communication between the Arduino and Raspberry PI, acquiring data from the camera, and a finite state machine to go through
+    an algorithm. The algorithm begins by having the robot slowly turn a stationary 360 degree turn while trying to acquire the aruco 
+    marker with the camera. Once the camera detects the marker, the robot will stop and adjust its orientation to be as lined up with 
+    the marker as possible. The next state will have the robot drive in a straight line stopping a short distance from the marker. After 
+    stopping, the robot will drive in a small circle, stopping as close to the starting point of the circle as possible. 
+
+    Circuit Set-up: The motor has 6 wires for input/output control, you can consult the documentation for
+    the motor used in this assignment here: https://www.pololu.com/product/2824. For the Arduino, the most important
+    pins for the motor are the Yellow and White wires, they are Channel A and B of the encoder respectively. Make sure
+    those are connected to the proper I/O pins on the Arduino. The Green and Blue wires connect to Ground and 5V on the
+    Arduino respectively. For this assignment, the Red and Black wires are the +7.2 volts and ground of the battery to
+    the motor. Mode description on the wiring of the circuit can be found here: https://www.pololu.com/docs/0J55/3.c
+
+    PIN ASSIGNMENTS on the Arduino
+    D2 - External Interrupt for Right Motor (Right Motor Channel A)
+    D3 - External Interrupt for Left Motor (Left Motor Channel A)
+    D4 - Fault Check
+    D5 - Right Motor Channel B
+    D6 - Left Motor Channel B
+    D7 - Left Motor Voltage
+    D8 - Right Motor Voltage
+    D9 - Left Motor Direction
+    D10 - Right Motor Direction
+    D12 - Status Flag (Fault)
+
+    Motor Cable Bus Color Code
+    Yellow - Channel A
+
+    White - Channel B
+    Blue - V_cc or V_dd (5 Volts)
+    Green - GND
+    Red - Motor(+)
+    Black - Motor(-)
+
+    Documentation:
+    I received help from the following people and sources:
+    https://forum.arduino.cc/index.php?topic=288234.0   Simple example on Serial.read()
+    https://www.pololu.com/product/2824                 Data sheet for the motor
+    https://www.pololu.com/docs/0J55/3.c                Data sheet and connections for the motor and Arduino
+    http://www.pjrc.com/teensy/td_libs_Encoder.html     Link to download Encoder.h library, crucial for this program
+*/
+
+/* Encoder Library - Basic Example
+   http://www.pjrc.com/teensy/td_libs_Encoder.html
+   Download the library Encoder.h from here for this program to execute
+   This example code is in the public domain.
+*/
+
+#include <Encoder.h>
+
+// Change these two numbers to the pins connected to your encoder.
+//   Best Performance: both pins have interrupt capability
+//   Good Performance: only the first pin has interrupt capability
+//   Low Performance:  neither pin has interrupt capability
+Encoder rightWheel(2, 5);
+Encoder leftWheel(3, 6);
+//   avoid using pins with LEDs attached
+
+#define enable 4            // This is the enable pin, turning both motors on/off
+#define right_voltageSign 8    // this you can set this pin either HIGH (CW spin) or LOW (CCW spin) using a digitalWrite()
+#define right_analogPin 10     // set the speed of rotation by setting the PWM value (0-255)
+#define left_voltageSign 7
+#define left_analogPin 9
+
+const long count_per_rev = 3200;                    // number of counts per revolution using Encoder.h file
+const float pi = 3.14159;                           // value of pi to 5 decimal places
+const int sample_rate = 50;                         // sampling time of the main program in milliseconds
+const float pwm_per_volt = 35.4167;                 // ratio of pwm(255) to motor voltage(7.2)
+
+const float wheel_radius = 3;                        // 7.29 centimeters
+const float wheel_dist = 11.625;                       // 29.5275 centimeters
+float wheel_circumference = 2 * pi * wheel_radius;      // wheel circumference in inches
+
+long newRight;
+long newLeft;
+
+float radian_per_count = (float) (2.0 * pi) / count_per_rev;
+float radian_desired = 0.0;
+float left_radian_actual = 0.0;
+float right_radian_actual = 0.0;
+float left_radian_per_second = 0.0;
+float right_radian_per_second = 0.0;
+
+int count = 0;
+
+float current_time = 0.0;
+
+int left_pwmNum = 0;
+int right_pwmNum = 0;
+int left_spin_dir;
+int right_spin_dir;
+
+float left_radian_old = 0.0;
+float right_radian_old = 0.0;
+int case_num;
+
+// RHO VARIABLES
+float rho_desired = 0.0;
+float rho_actual = 0.0;
+float rho_error = 0.0;
+float V_a_bar = 0.0;
+float delta_V_a = 0.0;
+float rho_dot_desired = 0.0;
+float rho_dot_actual = 0.0;
+float rho_dot_error = 0.0;
+float V_a_right = 0.0;
+float V_a_left = 0.0;
+float max_rho_dot = 350.0;
+float rho_dot_kp = 0.0; //changed from 0.25
+float rho_dot_integral = 0.0;
+float rho_dot_ki = 2.1; //1.1 for 2 ft
+float encoder_distance = 0;
+float rho_kp = .56; //1.6 .7 for 2 ft
+
+// PHI VARIABLES
+float phi_dot_desired = 0.0;
+float phi_dot_actual = 0.0;
+float phi_dot_error = 0.0;
+float phi_dot_kp = 0.0;
+float phi_dot_ki = 3.4; //3
+float phi_dot_integral = 0.0;
+float max_phi_dot = 350.0;
+float phi_desired = 0.0;
+float phi_actual = 0.0;
+float phi_error = 0.0;
+float phi_kp = 0.7; //.85
+float mod_kp = 1;
+
+//outerloop var
+float old_encoder_right = 0.0;
+float old_encoder_left = 0.0;
+float new_encoder_right = 0.0;
+float new_encoder_left = 0.0;
+float right_error = 0.0;
+float left_error = 0.0;
+
+float right_count = 0.0;
+float left_count = 0.0;
+
+String inputString;
+bool stringComplete;
+
+float input_distance;
+float input_angle;
+
+long oldRight = -999;                 // part of encoder.h, leave these alone
+long oldLeft = -999;
+
+String data;
+float distance = 0.0;
+float angle = 0.0;
+int time_counts;
+
+// - - - - - - - - - - - - - - SETUP - - - - - - - - - - - - - - - - - 
+
+void setup() {
+  Serial.begin(9600);
+  pinMode(enable, OUTPUT);
+  pinMode(left_voltageSign, OUTPUT);
+  pinMode(right_voltageSign, OUTPUT);
+  pinMode(left_analogPin, OUTPUT);
+  pinMode(right_analogPin, OUTPUT);
+  pinMode(12, INPUT);
+  digitalWrite(enable, HIGH);
+  //Serial.print("Setupcheck ");
+}
+
+// - - - - - - - - - - - - RESET CONTROL FUNCTION - - - - - - - - - - 
+
+// This function is used at the beginning of every state of the FSM, this will reset all initial values 
+// back to zero. Avoiding any carry over of previous values that could potentially negatively affect calculations
+void resetControl() {
+  //Serial.print("Initialized ");
+  rightWheel.write(0);
+  leftWheel.write(0);
+  radian_desired = 0.0;
+  left_radian_actual = 0.0;
+  right_radian_actual = 0.0;
+  left_radian_per_second = 0.0;
+  right_radian_per_second = 0.0;
+
+  count = 0;
+
+  current_time = 0.0;
+
+  left_pwmNum = 0;
+  right_pwmNum = 0;
+  left_spin_dir;
+  right_spin_dir;
+
+  left_radian_old = 0.0;
+  right_radian_old = 0.0;
+
+
+  // RHO VARIABLES
+  rho_desired = 0.0;
+  rho_actual = 0.0;
+  rho_error = 0.0;
+  V_a_bar = 0.0;
+  delta_V_a = 0.0;
+  rho_dot_desired = 0.0;
+  rho_dot_actual = 0.0;
+  rho_dot_error = 0.0;
+  V_a_right = 0.0;
+  V_a_left = 0.0;
+  max_rho_dot = 350.0;
+  rho_dot_integral = 0.0;
+  encoder_distance = 0;
+
+  // PHI VARIABLES
+  phi_dot_desired = 0.0;
+  phi_dot_actual = 0.0;
+  phi_dot_error = 0.0;
+  phi_dot_integral = 0.0;
+  max_phi_dot = 350.0;
+  phi_desired = 0.0;
+  phi_actual = 0.0;
+  phi_error = 0.0;
+
+  //outerloop var
+  old_encoder_right = 0.0;
+  old_encoder_left = 0.0;
+  new_encoder_right = 0.0;
+  new_encoder_left = 0.0;
+  right_error = 0.0;
+  left_error = 0.0;
+
+  right_count = 0.0;
+  left_count = 0.0;
+}
+
+
+//float serialEvent() {
+//  data = Serial.readStringUntil('\n');
+//  datafloat = data.toFloat();
+//  return datafloat;
+//  Serial.println(data);
+//}
+//
+//void recieveData(int byteCount) {
+//  Serial.println("Receiving")
+//  int z = 0;
+//  while (Serial.available()){
+//    dataFromPi[i] = Serial.read();
+//  }
+//
+//}
+
+//  - - - - - - - - - - - RHO PHI CONTROL FUNCTION  - - - - - - - - - 
+
+// This function takes in two float values for a desired distance and desired angle
+// It will then implement a position and velocity control loop to drive a specific 
+// distance and at a particular angle
+
+void Rho_Phi_control(float dist_in, float ang_in) {
+  //Serial.print("RunningRPC ");
+  // conversion from lateral distance in inches to distance in radians
+  rho_desired = (dist_in / wheel_circumference) * 2 * pi; //desired
+
+  // conversion from desired turn angle in degrees to  desired turn angle in radians
+  phi_desired = ang_in * pi / 180;
+
+  //beginning of time controlled loop
+  long time_old = micros();
+  int delta_t = 0;
+  float micros_to_millis = 0.0;
+
+  // calculation of the error between desired and actual position values (radians)
+
+  rho_error = rho_desired - rho_actual;
+  phi_error = phi_desired - phi_actual;
+  // DEBUGGING
+  // Serial.print("Time: ");
+  //  Serial.print(millis());
+  //  Serial.print("\t Rho desired: ");
+  //  Serial.print(rho_desired);
+  //  Serial.print("\t Rho Actual: ");
+  //  Serial.print(rho_actual);
+  //  Serial.print("\t Phi desired: ");
+  //  Serial.print(phi_desired);
+  //  Serial.print("\t Phi actual: ");
+  //  Serial.print(phi_actual);
+  //  Serial.print("\t Rho error: ");
+  //  Serial.print(rho_error);
+  //  Serial.print("\t Phi error: ");
+  //  Serial.print(phi_error);
+
+  //If SEARCHING 360 Degrees rotate very slow!
+  if (ang_in == 720) {
+    mod_kp = .03;
+  } else {
+    mod_kp = 1;
+  }
+
+
+  // block going from a lateral and angular desired position, to a desired lateral and angular velocity
+  if (rho_error > max_rho_dot) {
+    rho_dot_desired = max_rho_dot;
+  } else if (rho_error < -max_rho_dot) {
+    rho_dot_desired = -max_rho_dot;
+  }  else {
+    rho_dot_desired = rho_error * rho_kp;
+  }
+  if (phi_error > max_phi_dot) {
+    phi_dot_desired = max_phi_dot;
+  } else if (phi_error < -max_phi_dot) {
+    phi_dot_desired = -max_phi_dot;
+  } else {
+    phi_dot_desired = phi_error * phi_kp * mod_kp;
+  }
+  // DEBUGGING
+  //  Serial.print("\t Rho dot desired: ");
+  //  Serial.print(rho_dot_desired);
+  //  Serial.print("\t rho dot actual: ");
+  //  Serial.print(rho_dot_actual);
+  //  Serial.print("\t Phi dot desired: ");
+  //  Serial.print(phi_dot_desired);
+  //  Serial.print("\t Phi dot acatual: ");
+  //  Serial.print(phi_dot_actual);
+
+  // error of lateral and angular velocity are desired - actual
+  rho_dot_error = rho_dot_desired - rho_dot_actual;
+  phi_dot_error = phi_dot_desired - phi_dot_actual;
+
+  // setting old positional values for calculation on the change in position over time
+  left_radian_old = left_radian_actual;
+  right_radian_old = right_radian_actual;
+
+  // rho and phi integral calculations: integral = integral + (error * sampling rate / 1000 (us/ms))
+  rho_dot_integral = (float) rho_dot_integral + (rho_dot_error * sample_rate / 1000);
+  phi_dot_integral = (float) phi_dot_integral + (phi_dot_error * sample_rate / 1000);
+  
+  //  DEBUGGING
+  //  Serial.print("\t Rho integral: ");
+  //  Serial.print(rho_dot_integral);
+  //  Serial.print("\t Phi integral: ");
+  //  Serial.print(phi_dot_integral);
+
+  // Calculations for V bar and delta V, which are voltages used in the calculation of
+  // the individual motor voltages
+  V_a_bar = (float) (rho_dot_error * rho_dot_kp) + (rho_dot_integral * rho_dot_ki);
+  delta_V_a = (float) (phi_dot_error * phi_dot_kp) + (phi_dot_integral * phi_dot_ki);
+
+
+  //  DEBUGGING
+  //  Serial.print("\t Va Bar: ");
+  //  Serial.print(V_a_bar);
+  //  Serial.print("\t Delta Va: ");
+  //  Serial.print(delta_V_a);
+
+
+  //sending right voltages to wheels
+  V_a_right = (V_a_bar + delta_V_a) / 2;
+  V_a_left = (V_a_bar - delta_V_a) / 2;
+
+  if (V_a_right > 5) {
+    V_a_right = 5;
+  } else if (V_a_right < -5) {
+    V_a_right = -5;
+  }
+  if (V_a_left > 5) {
+    V_a_left = 5;
+  } else if (V_a_left < -5) {
+    V_a_left = -5;
+  }
+
+  // Calculation involved in the position controller
+  old_encoder_right  = new_encoder_right;
+  old_encoder_left = new_encoder_left;
+  new_encoder_right = rightWheel.read();
+  new_encoder_left = -1 * leftWheel.read();
+  right_error = new_encoder_right - old_encoder_right;
+  left_error = new_encoder_left - old_encoder_left;
+
+  right_count = right_count + right_error;
+  left_count = left_count + left_error;
+
+  // hardcoded the drive in a circle part of the demonstration
+  // depending on the position and velocity control to navigate
+  // a circle was not working as desired
+  if (dist_in != 0 && ang_in != 0) {
+
+    if ( right_count < 20000) {
+      //      Serial.print("\t in if  ");
+      //      Serial.print("\t right_count ");
+      //      Serial.print(right_count);
+      //      Serial.print("\t left_count: ");
+      //      Serial.println(left_count);
+      old_encoder_right  = new_encoder_right;
+      old_encoder_left = new_encoder_left;
+      new_encoder_right = rightWheel.read();
+      new_encoder_left = -1 * leftWheel.read();
+      right_error = new_encoder_right - old_encoder_right;
+      left_error = new_encoder_left - old_encoder_left;
+
+      right_count = right_count + right_error;
+      left_count = left_count + left_error;
+
+      V_a_left = 2.56;
+      V_a_right = 5;
+    }
+    else {
+      V_a_left = 0;
+      V_a_right = 0;
+    }
+  }
+
+  //  Serial.print("\t Right Voltage: ");
+  //  Serial.print(V_a_right);
+  //  Serial.print("\t Left Voltage: ");
+  //  Serial.println(V_a_left);
+
+  // Setting the direction pins for the two wheels
+  if (V_a_right > 0) {
+    digitalWrite(right_voltageSign, HIGH);
+  }
+  else {
+    digitalWrite(right_voltageSign, LOW);
+  }
+
+  if (V_a_left > 0) {
+    digitalWrite(left_voltageSign, HIGH);
+  }
+  else {
+    digitalWrite(left_voltageSign, LOW);
+  }
+
+  right_pwmNum = V_a_right * pwm_per_volt;
+  left_pwmNum = V_a_left * pwm_per_volt;
+
+  // sending pwm and direction values to the left and right motors
+  analogWrite(left_analogPin, abs(left_pwmNum));
+
+  analogWrite(right_analogPin, abs(right_pwmNum));
+
+  // reading positional values from the encoder
+  newRight = rightWheel.read();
+  newLeft = -1 * leftWheel.read();
+
+  //converting encoder values to angular velocity
+  right_radian_actual = newRight * radian_per_count;
+  left_radian_actual = newLeft * radian_per_count;
+
+  // change in angular position
+  float delta_left_radian = left_radian_actual - left_radian_old;
+  float delta_right_radian = right_radian_actual - right_radian_old;
+
+  // angular velocity calculation on based on change in position over the change in time (sample rate / 1000 (ms/sec))
+  right_radian_per_second = delta_right_radian / sample_rate * 1000;
+  left_radian_per_second = delta_left_radian / sample_rate * 1000;
+
+  // Calculation for the positional and angular velocity; equations taken directly from the assignment document
+  rho_dot_actual = ((right_radian_per_second + left_radian_per_second) / 2);
+  phi_dot_actual =  wheel_radius *((right_radian_per_second - left_radian_per_second) / wheel_dist);
+
+  // Calculation for position and orientation based off encoder measurements
+  rho_actual = ((right_radian_actual + left_radian_actual) / 2);
+  phi_actual =  wheel_radius *((right_radian_actual - left_radian_actual) * (1 / wheel_dist));
+
+  long time_now = micros();
+  delta_t = time_now - time_old;
+  current_time = time_now / 1E6;
+
+  micros_to_millis = (float) delta_t / 1000.0;
+  if (micros_to_millis > sample_rate) {
+    Serial.println("ERROR: Loop time longer than sampling rate.");
+  } else {
+    delay(sample_rate - micros_to_millis);
+  }
+}
+
+// - - - - - - - - - - - - - MAIN LOOP - - - - - - - - - - - - - - - - 
+
+// The main loop will have the robot begin slowly turning in a stationary circle
+// it will then proceed through a finite state machine, stopping in the last state of the FSM
+
+void loop() {
+  //Serial.print("loopcheck ");
+  case_num = 1;
+  Rho_Phi_control(0, 720); //720
+
+  if (Serial.available() > 0) {
+    switch (case_num) {
+      case 1: //STOP
+        data = Serial.readStringUntil('\n');
+        data = data.toFloat();
+        //Serial.print("You Sent me: ");
+        //Serial.println(data);
+        resetControl();
+        time_counts = 0;
+        while (time_counts < 50) {
+          Rho_Phi_control(0.0, 0.0);
+          time_counts += 1;
+        }
+        data = "";
+        Serial.println('2');
+        delay(250);
+        case_num = 2;
+        
+
+
+      case 2: // turn and face me coward
+        data = Serial.readStringUntil('\n');
+        angle = data.toFloat();
+        //Serial.print("You Sent me: ");
+        //Serial.println(angle);
+        //Serial.println(angle);
+        resetControl();
+        time_counts = 0;
+        while (time_counts < 200) {
+          Rho_Phi_control(0.0, -angle);
+          time_counts += 1;
+        }
+        data = "";
+        Serial.println('3');
+        delay(250);
+        case_num = 3;
+
+
+      case 3: //goin for a drive
+        //while (Serial.available() == 0) {}
+        data = Serial.readStringUntil('\n');
+        distance = data.toFloat();
+        distance = (distance-10);
+        //Serial.print("You Sent me: ");
+        //Serial.println(distance);
+        resetControl();
+        //rightWheel.write(0);
+        //leftWheel.write(0);
+        time_counts = 0;
+        while (time_counts < 150) {
+          Rho_Phi_control(distance, 0.0);
+          time_counts += 1;
+        }
+        case_num = 4;
+
+
+      case 4: // turn before circle
+        resetControl();
+        //rightWheel.write(0);
+        //leftWheel.write(0);
+        time_counts = 0;
+        while (time_counts < 100) {
+          Rho_Phi_control(0.0, -90.0);
+          time_counts += 1;
+        }
+        case_num = 5;
+
+
+      case 5: // drive in a circle
+        resetControl();
+        //rightWheel.write(0);
+        //leftWheel.write(0);
+        time_counts = 0;
+        while (time_counts < 600) {
+          Rho_Phi_control(1.1, 90.4);
+          time_counts += 1;
+        }
+        case_num = 6;
+
+
+      case 6: // STOP EVERYTHING
+        resetControl();
+        time_counts = 0;
+        while (true) {
+          Rho_Phi_control(0.0, 0.0);
+        }
+    }
+  }
+}
+
