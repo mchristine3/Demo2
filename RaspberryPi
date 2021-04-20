@@ -1,0 +1,100 @@
+import serial
+import cv2
+import numpy as np
+import cv2.aruco as aruco
+import matplotlib.pyplot as plt
+import time
+import math
+import imutils
+from imutils.video import VideoStream  # pip3 install imutils
+
+def Pi2Ard(string): #Definition allows us to pass the values when we want from the pi to the arduino
+    temp = str(string)
+    print("Sending to Ard:", temp)
+    sendto = bytes(temp, 'utf-8')
+    ser.write(sendto+b'\n')
+    #line = ser.readline().decode('utf-8').rstrip()
+    #print(line)
+    
+def detect():
+    dist = np.array([[0.19396467, - 1.16139471, - 0.00465488, 0.00251178, 2.46086765]], dtype=np.int)
+    dist = dist.reshape(1, 5, 1)
+    K = np.array([[622.29528929,0.,317.22251656],[0.,616.24482665,232.22185519],[0.,0.,1.]],dtype=np.float)
+    K = K.reshape(3, 3, 1)
+    usingPiCamera = True
+    frameSize = (640, 480)
+    vs = VideoStream(src=0, usePiCamera=usingPiCamera, resolution=frameSize, framerate=32).start()
+    time.sleep(1.0)
+    temp = 0.0
+    passsing = 3
+    trigger = 1
+    while True:  # SUCCESS IS A BOOLEAN if successful in saving
+        image = vs.read()  # Goes through each frame and captures image in image
+        cv2.imshow("Camera",image)
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
+        #time.sleep(5)
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        aruco_dict = aruco.Dictionary_get(aruco.DICT_5X5_250)
+        parameters = aruco.DetectorParameters_create()
+        corners, ids, rejectedImgPoints = aruco.detectMarkers(gray, aruco_dict, parameters=parameters)
+        corners = np.array(corners, dtype=np.float)
+        if ids == None:
+            print("No Markers Found")
+        else:
+            if trigger == 1: #This triggers for the arduino to begin serial communication
+                Pi2Ard(1)
+                trigger = 2
+                
+            #time.sleep(10)   
+            for a in range(len(ids)):
+                c = corners[a][0]
+                plt.plot([c[:, 0].mean()], [c[:, 1].mean()], "+", label="id={0}".format(ids[a]))
+                corners = corners.reshape(4, 2, 1)
+                points_3d = np.array([[[-3, 3, 0.]], [[3, 3, 0.]], [[3, -3, 0.]], [[-3, -3, 0]]], dtype=np.float)
+                ret, rvecs, tvecs = cv2.solvePnP(points_3d, corners, K, dist)
+ #1.4375               
+            angle_rad = math.atan((tvecs[0]/tvecs[2]))
+            angle_degree = float((angle_rad*180)/math.pi)
+            camera_distance = float(tvecs[2])
+            #When we trigger from a 1 we set values to detect the aruco to find the angle and distance from it
+            passed = 0
+            other = 0
+            temp = '0'
+            while temp == '0':
+                temp = ser.readline().decode('utf-8').rstrip()
+                
+            time.sleep(.25)
+            
+            if temp == '2': 
+                passsing = 1
+                
+            elif temp == '3':
+                passsing = 0   
+                
+            print("Recieved", temp) 
+            if passsing == 0: #This will store the distance from the camera
+                passed = camera_distance
+                other = 1
+                
+            elif passsing == 1: #This will store the angle at which the arduino needs to correct itself at
+                passed = angle_degree
+            
+            if trigger == 2:
+                Pi2Ard(passed) #When trigger 2 is passed, we are allowing the pi to send the angle and distance to the arduino using the Pi2Ard definition
+        
+
+            if other == 1:
+                break
+ 
+
+if __name__ == '__main__':
+    ser = serial.Serial('/dev/ttyACM0', 9600)
+    time.sleep(1)
+    ser.flush()
+
+    while True:
+        detect()
+        print('End detect')
+
+
