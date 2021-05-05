@@ -8,7 +8,7 @@ import math
 import imutils
 from imutils.video import VideoStream  # pip3 install imutils
 
-def Pi2Ard(string): #Definition allows us to pass the values when we want from the pi to the arduino
+def Pi2Ard(string):
     temp = str(string)
     print("Sending to Ard:", temp)
     sendto = bytes(temp, 'utf-8')
@@ -23,11 +23,13 @@ def detect():
     K = K.reshape(3, 3, 1)
     usingPiCamera = True
     frameSize = (640, 480)
-    vs = VideoStream(src=0, usePiCamera=usingPiCamera, resolution=frameSize, framerate=32).start()
+    vs = VideoStream(src=0, usePiCamera=usingPiCamera, resolution=frameSize, framerate=90).start()
+    #vs.set(cv2.CAP_PROP_FPS, 120)
     time.sleep(1.0)
     temp = 0.0
     passsing = 3
     trigger = 1
+    roll = 0
     while True:  # SUCCESS IS A BOOLEAN if successful in saving
         image = vs.read()  # Goes through each frame and captures image in image
         cv2.imshow("Camera",image)
@@ -35,19 +37,19 @@ def detect():
             break
         #time.sleep(5)
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        aruco_dict = aruco.Dictionary_get(aruco.DICT_5X5_250)
+        aruco_dict = aruco.Dictionary_get(aruco.DICT_6X6_250)
         parameters = aruco.DetectorParameters_create()
         corners, ids, rejectedImgPoints = aruco.detectMarkers(gray, aruco_dict, parameters=parameters)
         corners = np.array(corners, dtype=np.float)
         if ids == None:
             print("No Markers Found")
         else:
-            if trigger == 1: #This triggers for the arduino to begin serial communication
+            if trigger == 1:
                 Pi2Ard(1)
-                trigger = 2
+                trigger = 5
                 
-            #time.sleep(10)   
             for a in range(len(ids)):
+                
                 c = corners[a][0]
                 plt.plot([c[:, 0].mean()], [c[:, 1].mean()], "+", label="id={0}".format(ids[a]))
                 corners = corners.reshape(4, 2, 1)
@@ -57,35 +59,47 @@ def detect():
             angle_rad = math.atan((tvecs[0]/tvecs[2]))
             angle_degree = float((angle_rad*180)/math.pi)
             camera_distance = float(tvecs[2])
-            #When we trigger from a 1 we set values to detect the aruco to find the angle and distance from it
             passed = 0
             other = 0
-            temp = '0'
-            while temp == '0':
-                temp = ser.readline().decode('utf-8').rstrip()
-                
-            time.sleep(.25)
             
-            if temp == '2': 
-                passsing = 1
-                
-            elif temp == '3':
-                passsing = 0   
-                
-            print("Recieved", temp) 
-            if passsing == 0: #This will store the distance from the camera
-                passed = camera_distance
-                other = 1
-                
-            elif passsing == 1: #This will store the angle at which the arduino needs to correct itself at
-                passed = angle_degree
+            roll += 1
+            print("ROLL", roll)
             
-            if trigger == 2:
-                Pi2Ard(passed) #When trigger 2 is passed, we are allowing the pi to send the angle and distance to the arduino using the Pi2Ard definition
-        
-
-            if other == 1:
-                break
+            if roll > 5:
+                print("made it in")
+                temp = '0'
+                if temp == '0':
+                    temp = ser.readline().decode('utf-8').rstrip()
+                
+            
+                if temp == '2':
+                    passsing = 1
+                    trigger = 2
+                    roll = -5
+                
+                elif temp == '3':
+                    passsing = 0   
+                    trigger = 2
+                
+                print("Recieved", temp)
+            
+                if passsing == 0:
+                    passed = camera_distance
+                    other = 1
+                
+                elif passsing == 1:
+                    passed = angle_degree
+            
+                if trigger == 2:
+                    Pi2Ard(passed)
+                    
+                if other == 1:
+                    break
+            
+            trigger = 0
+            camera_distance = 0
+            angle_degree = 0
+            
  
 
 if __name__ == '__main__':
@@ -96,5 +110,6 @@ if __name__ == '__main__':
     while True:
         detect()
         print('End detect')
+
 
 
